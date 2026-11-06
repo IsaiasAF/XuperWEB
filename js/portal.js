@@ -295,7 +295,7 @@
       columnId: "",
       filter: "",
       pageNum: 1,
-      pageSize: 20
+      pageSize: 30
     }).then(function (r) {
       // normalize to flat list
       var items = [];
