@@ -95,7 +95,8 @@
       <div id="linksMeta"></div>
       <textarea id="linksOut" readonly placeholder="Aquí aparecerán la URL y los headers…"></textarea>
       <div class="row">
-        <button class="btn primary" id="btnCopyAll" tabindex="0">Copiar todo</button>
+        <button class="btn primary" id="btnLinksWvc" tabindex="0">Web Video Caster</button>
+        <button class="btn" id="btnCopyAll" tabindex="0">Copiar todo</button>
         <button class="btn" id="btnCopyUrl" tabindex="0">Solo URL</button>
         <button class="btn" id="btnClearLinks" tabindex="0">Limpiar</button>
       </div>
@@ -108,6 +109,7 @@
           <div class="name" id="playName">—</div>
           <div class="tech" id="playTech">—</div>
         </div>
+        <button class="btn primary" id="btnWvc" tabindex="0">Web Video Caster</button>
         <button class="btn" id="btnToLinks" tabindex="0">Ver enlace</button>
         <button class="btn" id="btnCopy" tabindex="0">Copiar URL</button>
         <button class="btn danger" id="btnClose" tabindex="0">Cerrar</button>
@@ -119,7 +121,7 @@
     <div class="spin" id="msgSpin"></div>
     <div id="msgText">Cargando…</div>
   </div>
-  <div class="help">↑↓←→ navegar · Enter · Back cerrar · pestañas arriba</div>
+  <div class="help">Si no reproduce en el navegador: Ver enlace → Web Video Caster / VLC (normal con H.265)</div>
 
   <script src="js/config.js"></script>
   <script src="js/crypto-portal.js"></script>
@@ -427,8 +429,11 @@
 
     function tryNext() {
       if (idx >= candidates.length) {
-        setStatus("Usa «Ver enlace» o VLC", "err");
-        showMsg("El navegador no pudo reproducir. Usa «Ver enlace» / Copiar URL.", false);
+        setStatus("Navegador no reproduce · usa player externo", "err");
+        if (lastResolved) {
+          $("linksOut").value = formatLinkBlock(lastResolved);
+        }
+        showMsg("El navegador no puede reproducir este formato (suele ser H.265/TS). Usa «Ver enlace» o Web Video Caster / VLC.", false);
         return;
       }
       var c = candidates[idx++];
@@ -437,7 +442,7 @@
       if (proxyBase) {
         var proxied = proxyBase.replace(/\/$/, "") + "/stream?url=" + encodeURIComponent(c.url) +
           "&auth=" + encodeURIComponent(c.auth || "") +
-          "&license=" + encodeURIComponent(stream.license || stream.headers && stream.headers["Content-License"] || "");
+          "&license=" + encodeURIComponent(stream.license || (stream.headers && stream.headers["Content-License"]) || "");
         playUrl(proxied, "proxy");
         return;
       }
@@ -539,7 +544,66 @@
     currentTab = tab;
     linksMode = tab === "links";
     if (tab !== "movies" && tab !== "series") currentGenre = "all";
-    document.querySelectorAll(".tab").forEach(function (t) {
+  
+  function playableUrlForExternal(stream) {
+    if (!stream) return "";
+    var c = (stream.candidates && stream.candidates[0]) || { url: stream.url, auth: stream.headers && stream.headers["Content-Auth"] };
+    var proxyBase = (window.XUPER_CONFIG && window.XUPER_CONFIG.proxyBase) || "";
+    if (proxyBase) {
+      var license = stream.license || (stream.headers && stream.headers["Content-License"]) || "";
+      return proxyBase.replace(/\/$/, "") + "/stream?url=" + encodeURIComponent(c.url) +
+        "&auth=" + encodeURIComponent(c.auth || "") +
+        "&license=" + encodeURIComponent(license);
+    }
+    return c.url || stream.url || "";
+  }
+
+  function openInWebVideoCaster(stream) {
+    if (!stream) {
+      showMsg("Primero resuelve un título", false);
+      setTimeout(hideMsg, 2000);
+      return;
+    }
+    var playUrl = playableUrlForExternal(stream);
+    if (!playUrl) {
+      showMsg("No hay URL de reproducción", false);
+      setTimeout(hideMsg, 2000);
+      return;
+    }
+    // Intent Android → Web Video Caster (com.instantbits.cast.webvideo)
+    var intent = "intent:" + playUrl + "#Intent;action=android.intent.action.VIEW;" +
+      "type=video/*;package=com.instantbits.cast.webvideo;S.browser_fallback_url=" +
+      encodeURIComponent(playUrl) + ";end";
+    showMsg("Abriendo Web Video Caster…", false);
+    try {
+      window.location.href = intent;
+    } catch (e) {}
+    // También copiar por si el intent no está disponible (iOS / PC)
+    setTimeout(function () {
+      copyText(playUrl).then(function () {
+        showMsg("Si no abrió Caster, la URL se copió al portapapeles", false);
+        setTimeout(hideMsg, 2500);
+      }).catch(function () {
+        hideMsg();
+      });
+    }, 800);
+  }
+
+  function yearOf(item) {
+    var y = parseInt(String(item.year || item.releaseDate || "").slice(0, 4), 10);
+    return isNaN(y) ? 0 : y;
+  }
+
+  function sortByNewest(items) {
+    return items.slice().sort(function (a, b) {
+      var dy = yearOf(b) - yearOf(a);
+      if (dy !== 0) return dy;
+      return String(a.title || "").localeCompare(String(b.title || ""), "es");
+    });
+  }
+
+
+  document.querySelectorAll(".tab").forEach(function (t) {
       t.classList.toggle("active", t.getAttribute("data-tab") === tab);
     });
     if (tab === "links") {
@@ -600,11 +664,13 @@
           var id = row.contentId || row.id || row.programContentId;
           var title = row.name || row.title || row.contentName;
           if (id && title) {
+            var year = row.year || row.releaseTime || row.releaseDate || row.releaseYear || "—";
+            if (year && year !== "—") year = String(year).slice(0, 4);
             items.push({
               id: id,
               title: title,
               score: row.score || row.rating || "—",
-              year: row.year || "—",
+              year: year,
               poster: (row.posterList && row.posterList[0] && row.posterList[0].fileUrl) || row.poster || "",
               type: row.type || row.contentType || "movie",
               category: "búsqueda"
@@ -615,18 +681,20 @@
           var local = catalog.filter(function (c) {
             return (c.title || "").toLowerCase().indexOf(q.toLowerCase()) >= 0;
           });
+          local = sortByNewest(local);
           renderGrid(local, "Local: " + q);
           setStatus(local.length ? local.length + " local" : "Sin resultados", local.length ? "ok" : "err");
         } else {
-          setStatus(items.length + " resultados", "ok");
+          items = sortByNewest(items);
+          setStatus(items.length + " resultados (más recientes primero)", "ok");
           renderGrid(items, "Búsqueda: " + q);
         }
       })
       .catch(function (err) {
         hideMsg();
-        var local = catalog.filter(function (c) {
+        var local = sortByNewest(catalog.filter(function (c) {
           return (c.title || "").toLowerCase().indexOf(q.toLowerCase()) >= 0;
-        });
+        }));
         renderGrid(local, "Local: " + q);
         setStatus("Búsqueda API falló · local " + local.length, "err");
       });
@@ -675,6 +743,65 @@
     });
   }
 
+
+  function playableUrlForExternal(stream) {
+    if (!stream) return "";
+    var c = (stream.candidates && stream.candidates[0]) || { url: stream.url, auth: stream.headers && stream.headers["Content-Auth"] };
+    var proxyBase = (window.XUPER_CONFIG && window.XUPER_CONFIG.proxyBase) || "";
+    if (proxyBase) {
+      var license = stream.license || (stream.headers && stream.headers["Content-License"]) || "";
+      return proxyBase.replace(/\/$/, "") + "/stream?url=" + encodeURIComponent(c.url) +
+        "&auth=" + encodeURIComponent(c.auth || "") +
+        "&license=" + encodeURIComponent(license);
+    }
+    return c.url || stream.url || "";
+  }
+
+  function openInWebVideoCaster(stream) {
+    if (!stream) {
+      showMsg("Primero resuelve un título", false);
+      setTimeout(hideMsg, 2000);
+      return;
+    }
+    var playUrl = playableUrlForExternal(stream);
+    if (!playUrl) {
+      showMsg("No hay URL de reproducción", false);
+      setTimeout(hideMsg, 2000);
+      return;
+    }
+    // Intent Android → Web Video Caster (com.instantbits.cast.webvideo)
+    var intent = "intent:" + playUrl + "#Intent;action=android.intent.action.VIEW;" +
+      "type=video/*;package=com.instantbits.cast.webvideo;S.browser_fallback_url=" +
+      encodeURIComponent(playUrl) + ";end";
+    showMsg("Abriendo Web Video Caster…", false);
+    try {
+      window.location.href = intent;
+    } catch (e) {}
+    // También copiar por si el intent no está disponible (iOS / PC)
+    setTimeout(function () {
+      copyText(playUrl).then(function () {
+        showMsg("Si no abrió Caster, la URL se copió al portapapeles", false);
+        setTimeout(hideMsg, 2500);
+      }).catch(function () {
+        hideMsg();
+      });
+    }, 800);
+  }
+
+  function yearOf(item) {
+    var y = parseInt(String(item.year || item.releaseDate || "").slice(0, 4), 10);
+    return isNaN(y) ? 0 : y;
+  }
+
+  function sortByNewest(items) {
+    return items.slice().sort(function (a, b) {
+      var dy = yearOf(b) - yearOf(a);
+      if (dy !== 0) return dy;
+      return String(a.title || "").localeCompare(String(b.title || ""), "es");
+    });
+  }
+
+
   document.querySelectorAll(".tab").forEach(function (t) {
     t.addEventListener("click", function () { switchTab(t.getAttribute("data-tab")); });
     t.addEventListener("keydown", function (e) {
@@ -686,6 +813,10 @@
   $("btnSession").addEventListener("click", refreshSession);
   $("btnClose").addEventListener("click", closePlayer);
   $("btnCopy").addEventListener("click", copyResolved);
+  var btnWvc = $("btnWvc");
+  if (btnWvc) btnWvc.addEventListener("click", function () { openInWebVideoCaster(lastResolved); });
+  var btnLinksWvc = $("btnLinksWvc");
+  if (btnLinksWvc) btnLinksWvc.addEventListener("click", function () { openInWebVideoCaster(lastResolved); });
   $("btnToLinks").addEventListener("click", function () {
     if (!lastResolved) return;
     $("linksOut").value = formatLinkBlock(lastResolved);
