@@ -10,5 +10,5 @@
  * Déjalo vacío ("") para intentar conexión directa.
  */
 window.XUPER_CONFIG = {
-  proxyBase: ""
+  proxyBase: "https://xuper-web.101112isa.workers.dev/"
 };
